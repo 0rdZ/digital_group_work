@@ -2,7 +2,8 @@
 
 每个 Stage 是一个可独立开关的处理步骤：
 * ``func(image, params) -> (image, notes, metrics)``，纯函数式，便于测试；
-* ``params_spec`` 描述可调参数（名称、范围、默认值），UI 据此自动生成控件；
+* ``params_spec`` 描述可调参数（数值型 NumParam / 枚举型 EnumParam），
+  UI 据此自动生成滑杆或下拉框；
 * 关闭的阶段由 Runner 直接跳过（函数不被调用）。
 """
 
@@ -17,8 +18,34 @@ import numpy as np
 from docscan.core import binarize, color, enhance, freq, geometry, illumination, restore, sharpen
 from docscan.core.types import Image, to_uint8
 
-# 参数规格：(键, 中文标签, 默认值, 最小值, 最大值)
-ParamSpec = tuple[str, str, float, float, float]
+
+@dataclass(frozen=True)
+class NumParam:
+    """数值参数：UI 渲染为滑杆 + 数值框。"""
+
+    key: str
+    label: str
+    default: float
+    minimum: float
+    maximum: float
+    step: float = 0.1
+    integer: bool = False  # 为 True 时 UI 取整显示，stage 内部也会 int() 兜底
+
+
+@dataclass(frozen=True)
+class EnumParam:
+    """枚举参数：UI 渲染为只读下拉框。choices 为 (取值, 中文标签) 序列。"""
+
+    key: str
+    label: str
+    default: str
+    choices: tuple[tuple[str, str], ...]
+
+    def label_of(self, value: str) -> str:
+        return dict(self.choices).get(value, value)
+
+
+ParamSpec = NumParam | EnumParam
 
 
 @dataclass
@@ -33,8 +60,8 @@ class Stage:
     enabled: bool = True
 
     def reset_params(self) -> None:
-        """把参数恢复为默认值。"""
-        self.params = {key: default for key, _, default, _, _ in self.params_spec}
+        """把参数恢复为默认值（spec 外的临时键，如频谱手动选点，一并清除）。"""
+        self.params = {spec.key: spec.default for spec in self.params_spec}
 
 
 def stage_warp(
@@ -54,14 +81,25 @@ def stage_warp(
 def stage_binarize(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """自适应阈值二值化阶段（输入彩色图时先转灰度）。"""
-    block = int(params.get("block_size", 31))
-    c = float(params.get("c", 10.0))
+    """二值化阶段：自适应 / Otsu / Sauvola 三选一（彩色输入先转灰度）。"""
+    method = str(params.get("method", "adaptive"))
     gray = binarize.to_gray(img)
-    out = binarize.adaptive(gray, block_size=block, c=c)
+    if method == "otsu":
+        out = binarize.otsu(gray)
+        detail = "全局 Otsu"
+    elif method == "sauvola":
+        window = int(params.get("window", 25))
+        k = float(params.get("k", 0.2))
+        out = binarize.sauvola(gray, window=window, k=k)
+        detail = f"Sauvola w={window}, k={k:g}"
+    else:
+        block = int(params.get("block_size", 31))
+        c = float(params.get("c", 10.0))
+        out = binarize.adaptive(gray, block_size=block, c=c)
+        detail = f"自适应 blockSize={block}, C={c:g}"
     out = binarize.clean_small_components(out, min_area=int(params.get("min_area", 8)))
     ink = float((out < 128).mean())
-    return out, f"blockSize={block}, C={c:g}", {"ink_ratio": ink}
+    return out, detail, {"ink_ratio": ink}
 
 
 def stage_illumination(
@@ -93,14 +131,24 @@ def stage_white_balance(
 def stage_enhance(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """对比度增强阶段：CLAHE（只在亮度通道）。"""
-    clip = float(params.get("clip_limit", 2.0))
-    grid = int(params.get("grid_size", 8))
+    """对比度增强阶段：CLAHE / 直方图均衡 / 对比度拉伸，均只在亮度通道。"""
+    method = str(params.get("method", "clahe"))
+    if method == "histeq":
+        out = enhance.hist_equalize(img)
+        detail = "直方图均衡"
+    elif method == "stretch":
+        out = enhance.contrast_stretch(img)
+        detail = "对比度拉伸 1%~99%"
+    else:
+        clip = float(params.get("clip_limit", 2.0))
+        grid = int(params.get("grid_size", 8))
+        out = enhance.clahe(img, clip_limit=clip, grid_size=grid)
+        detail = f"CLAHE clip={clip:g}, grid={grid}"
     gamma = float(params.get("gamma", 1.0))
-    out = enhance.clahe(img, clip_limit=clip, grid_size=grid)
     if gamma != 1.0:
         out = enhance.apply_gamma(out, gamma)
-    return out, f"CLAHE clip={clip:g}, gamma={gamma:g}", {}
+        detail += f", γ={gamma:g}"
+    return out, detail, {}
 
 
 def stage_freq_denoise(
@@ -135,7 +183,7 @@ def stage_restore(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
     """退化复原阶段：倒谱估 PSF（或手动指定）→ 维纳滤波。"""
-    if bool(int(params.get("use_estimation", 1))):
+    if str(params.get("psf_mode", "est")) == "est":
         angle, length = restore.estimate_psf_cepstrum(img)
         note = f"倒谱估计 PSF: L={length}, θ={angle:.1f}°"
     else:
@@ -159,37 +207,59 @@ def stage_sharpen(
 
 
 WARP_SPEC: list[ParamSpec] = [
-    ("min_confidence", "角点置信度阈值", 0.6, 0.0, 1.0),
+    NumParam("min_confidence", "角点置信度阈值", 0.6, 0.0, 1.0, 0.05),
 ]
 ILLUM_SPEC: list[ParamSpec] = [
-    ("sigma", "光照场尺度", 30.0, 5.0, 120.0),
+    NumParam("sigma", "光照场尺度", 30.0, 5.0, 120.0, 1.0),
 ]
 WB_SPEC: list[ParamSpec] = [
-    ("strength", "校正强度", 1.0, 0.0, 1.0),
+    EnumParam(
+        "method", "白平衡方法", "white_patch",
+        (("white_patch", "白块估计"), ("gray_world", "灰世界")),
+    ),
+    NumParam("strength", "校正强度", 1.0, 0.0, 1.0, 0.05),
 ]
 ENHANCE_SPEC: list[ParamSpec] = [
-    ("clip_limit", "CLAHE 削波", 2.0, 0.1, 10.0),
-    ("gamma", "伽马", 1.0, 0.2, 3.0),
+    EnumParam(
+        "method", "增强方法", "clahe",
+        (("clahe", "CLAHE"), ("histeq", "直方图均衡"), ("stretch", "对比度拉伸")),
+    ),
+    NumParam("clip_limit", "CLAHE 削波", 2.0, 0.1, 10.0, 0.1),
+    NumParam("grid_size", "CLAHE 网格", 8, 2, 16, 1, integer=True),
+    NumParam("gamma", "伽马", 1.0, 0.2, 3.0, 0.05),
 ]
 BINARIZE_SPEC: list[ParamSpec] = [
-    ("block_size", "邻域边长(奇数)", 31, 3, 151),
-    ("c", "阈值偏置 C", 10.0, 0.0, 40.0),
-    ("min_area", "最小连通域", 8, 0, 200),
+    EnumParam(
+        "method", "二值化方法", "adaptive",
+        (("adaptive", "自适应阈值"), ("otsu", "全局 Otsu"), ("sauvola", "Sauvola")),
+    ),
+    NumParam("block_size", "邻域边长(奇数)", 31, 3, 151, 2, integer=True),
+    NumParam("c", "阈值偏置 C", 10.0, 0.0, 40.0, 0.5),
+    NumParam("window", "Sauvola 窗口(奇数)", 25, 7, 101, 2, integer=True),
+    NumParam("k", "Sauvola 敏感度 k", 0.2, 0.05, 0.6, 0.01),
+    NumParam("min_area", "最小连通域", 8, 0, 200, 1, integer=True),
 ]
 FREQ_SPEC: list[ParamSpec] = [
-    ("top_n", "自动找峰数量", 4, 1, 12),
-    ("radius", "陷波半径(0=自适应)", 0.0, 0.0, 40.0),
-    ("order", "Butterworth 阶数", 4.0, 1.0, 16.0),
+    EnumParam(
+        "kind", "陷波器类型", "butterworth",
+        (("butterworth", "Butterworth"), ("ideal", "理想陷波")),
+    ),
+    NumParam("top_n", "自动找峰数量", 4, 1, 12, 1, integer=True),
+    NumParam("radius", "陷波半径(0=自适应)", 0, 0, 40, 1, integer=True),
+    NumParam("order", "Butterworth 阶数", 4.0, 1.0, 16.0, 1.0),
 ]
 RESTORE_SPEC: list[ParamSpec] = [
-    ("use_estimation", "自动估计PSF(1/0)", 1.0, 0.0, 1.0),
-    ("length", "模糊长度(手动)", 9.0, 1.0, 51.0),
-    ("angle_deg", "模糊角度(手动)", 0.0, -90.0, 90.0),
-    ("K", "维纳噪信比", 0.01, 1e-5, 1.0),
+    EnumParam(
+        "psf_mode", "PSF 来源", "est",
+        (("est", "倒谱自动估计"), ("manual", "手动指定")),
+    ),
+    NumParam("length", "模糊长度(手动)", 9.0, 1.0, 51.0, 1.0, integer=True),
+    NumParam("angle_deg", "模糊角度(手动)", 0.0, -90.0, 90.0, 1.0),
+    NumParam("K", "维纳噪信比", 0.01, 1e-5, 1.0, 0.001),
 ]
 SHARPEN_SPEC: list[ParamSpec] = [
-    ("amount", "锐化强度", 1.0, 0.0, 3.0),
-    ("radius", "模糊半径σ", 2.0, 0.5, 8.0),
+    NumParam("amount", "锐化强度", 1.0, 0.0, 3.0, 0.1),
+    NumParam("radius", "模糊半径σ", 2.0, 0.5, 8.0, 0.5),
 ]
 
 
