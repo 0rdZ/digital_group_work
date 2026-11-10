@@ -65,6 +65,12 @@ class MainWindow(ttk.Frame):
         ttk.Button(bar, text="频谱选点", command=self._open_spectrum).pack(
             side=tk.LEFT, padx=(SP_2, 0)
         )
+        ttk.Button(bar, text="加载预设", command=self._load_preset).pack(
+            side=tk.LEFT, padx=(SP_2, 0)
+        )
+        ttk.Button(bar, text="保存预设", command=self._save_preset).pack(
+            side=tk.LEFT, padx=(SP_2, 0)
+        )
 
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=SP_3)
         self.zoom_var = tk.StringVar(value="fit")
@@ -133,8 +139,8 @@ class MainWindow(ttk.Frame):
         self.root.bind("<Return>", lambda _e: self._run())
         self.root.bind("<Control-s>", lambda _e: self._save_result())
         self.root.bind("<Control-d>", lambda _e: self.toggle_theme())
-        self.root.bind("<plus>", lambda _e: self.canvas.set_zoom(min(float(self.canvas.zoom_percent) / 100 * 1.25, 4.0)))
-        self.root.bind("<minus>", lambda _e: self.canvas.set_zoom(max(float(self.canvas.zoom_percent) / 100 / 1.25, 0.25)))
+        self.root.bind("<plus>", lambda _e: self._nudge_zoom(1.25))
+        self.root.bind("<minus>", lambda _e: self._nudge_zoom(1 / 1.25))
 
     # ---- 用户动作 ----
 
@@ -155,6 +161,24 @@ class MainWindow(ttk.Frame):
     def stage_list_rebuild_if_needed(self) -> None:
         """阶段启用状态在代码侧变化后，同步勾选框显示。"""
         self.stage_list.rebuild(self.controller.stages)
+
+    def _save_preset(self) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="保存参数预设",
+            defaultextension=".json",
+            filetypes=[("JSON 预设", "*.json"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.controller.save_preset(path)
+
+    def _load_preset(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self, title="加载参数预设", filetypes=[("JSON 预设", "*.json")]
+        )
+        if path:
+            self.controller.load_preset(path)
+            self.stage_list.rebuild(self.controller.stages)
 
     def _open_dialog(self) -> None:
         path = filedialog.askopenfilename(title="打开图像", filetypes=FILE_PATTERNS)
@@ -273,7 +297,14 @@ class MainWindow(ttk.Frame):
         if x is None:
             self.pixel_info.configure(text="")
         else:
-            self.pixel_info.configure(text=f"({x}, {y})  灰度 {gray}  ·  {self.canvas.zoom_percent}%")
+            self.pixel_info.configure(
+                text=f"({x}, {y})  灰度 {gray}  ·  {self.canvas.zoom_percent}%"
+            )
+
+    def _nudge_zoom(self, factor: float) -> None:
+        """键盘 +/- 缩放：在当前比例上乘一个因子并夹到 [0.25, 4.0]。"""
+        current = float(self.canvas.zoom_percent) / 100.0
+        self.canvas.set_zoom(min(max(current * factor, 0.25), 4.0))
 
     def _on_zoom_changed(self, scale: float, mode: str) -> None:
         percent = max(1, round(scale * 100))

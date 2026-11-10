@@ -33,7 +33,7 @@ class TestRenderPdf:
         assert img.shape[:2] == (280, 200)
 
     def test_content_black_block_preserved(self, one_page_pdf):
-        path, arr = one_page_pdf
+        path, _arr = one_page_pdf
         pages = render_pdf(path, dpi=72, max_side=10000)
         img = pages[0]
         # 左上角黑块中心仍应是暗像素（BGR 均值 < 64）

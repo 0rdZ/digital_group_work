@@ -112,6 +112,72 @@ class TestStageParams:
         assert stages["binarize"].params["block_size"] == 31
 
 
+class TestStageBehaviours:
+    """针对审计缺陷的回归测试：这些路径原先没有测试覆盖。"""
+
+    def test_denoise_stage_exists_and_disabled_by_default(self):
+        stages = {s.name: s for s in build_default_stages()}
+        assert "denoise" in stages
+        assert stages["denoise"].enabled is False
+        # 顺序：增强之后、去网纹之前（先去噪再陷波/复原）
+        names = [s.name for s in build_default_stages()]
+        assert names.index("enhance") < names.index("denoise") < names.index("freq")
+
+    def test_enhance_none_applies_only_gamma(self):
+        from docscan.pipeline.stages import stage_enhance
+
+        img = make_page(120, 160)
+        out, note, _ = stage_enhance(img, {"method": "none", "gamma": 1.0})
+        assert note == "不增强"
+        np.testing.assert_array_equal(out, img)
+
+    def test_warp_accepts_grayscale(self):
+        """灰度输入不应让几何校正阶段直接抛异常（否则灰度链静默跳过校正）。"""
+        from docscan.pipeline.stages import stage_warp
+
+        gray = make_page(400, 560)[..., 0]
+        out, note, metrics_out = stage_warp(gray, {"min_confidence": 0.6})
+        assert out.ndim == 2
+        assert "confidence" in metrics_out
+        assert "需要三通道" not in note
+
+    def test_restore_defocus_and_inverse(self):
+        from docscan.pipeline.stages import stage_restore
+
+        img = make_page(240, 320)
+        _, note, m = stage_restore(
+            img, {"psf_type": "defocus", "defocus_radius": 5, "filter": "wiener", "K": 0.01}
+        )
+        assert "散焦" in note and m["psf_radius"] == 5.0
+
+        _, note2, _ = stage_restore(
+            img,
+            {
+                "psf_type": "motion", "psf_mode": "manual", "length": 9,
+                "angle_deg": 0.0, "filter": "inverse", "eps": 1e-3,
+            },
+        )
+        assert "逆滤波" in note2 and "手动 PSF" in note2
+
+    def test_restore_reports_failure_instead_of_raising(self):
+        """倒谱估不出 PSF 时返回原图 + 明确说明，而不是把异常抛给 Runner。"""
+        from docscan.pipeline.stages import stage_restore
+
+        flat = np.full((200, 200, 3), 200, np.uint8)
+        out, note, _ = stage_restore(flat, {"psf_type": "motion", "psf_mode": "est"})
+        assert out is flat
+        assert "失败" in note or "倒谱" in note
+
+    def test_freq_stage_flags_ineffective_notch(self):
+        """陷波无效（伪峰）时必须置 notch_ok=0 并在 note 里提示。"""
+        from docscan.pipeline.stages import stage_freq_denoise
+
+        img = np.full((200, 200, 3), 200, np.uint8)  # 平坦图：非 DC 处无能量
+        _, note, m = stage_freq_denoise(img, {"manual_peaks": [(20, 20)], "radius": 4})
+        assert m["notch_ok"] == 0.0
+        assert "手动选点" in note
+
+
 class TestPipelineConfig:
     def test_roundtrip_json(self, tmp_path):
         stages = build_default_stages()

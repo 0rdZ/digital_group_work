@@ -5,7 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from docscan.ui.theme import SP_2, SP_3, Theme
+from docscan.ui.theme import SP_1, SP_2, SP_3, Theme
 
 FORMATS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     # (key, 标签, 默认扩展名, 可用扩展名)
@@ -98,7 +98,13 @@ class SaveDialog(tk.Toplevel):
             messagebox.showwarning("保存结果", "请先填写保存路径", parent=self)
             return
         lower = path.lower()
-        if not lower.endswith(fmt[3]):
+        # 手填的扩展名优先于下拉框：用户写 out.jpg 却选了 PNG 时，
+        # 不应该悄悄存成 out.jpg.png
+        for candidate in FORMATS:
+            if lower.endswith(candidate[3]):
+                fmt = candidate
+                break
+        else:
             path += fmt[2]
         self.result = (path, fmt[0], mode[0])
         self.destroy()

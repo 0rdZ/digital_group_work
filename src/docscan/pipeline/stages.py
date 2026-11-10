@@ -15,7 +15,17 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from docscan.core import binarize, color, enhance, freq, geometry, illumination, restore, sharpen
+from docscan.core import (
+    binarize,
+    color,
+    denoise,
+    enhance,
+    freq,
+    geometry,
+    illumination,
+    restore,
+    sharpen,
+)
 from docscan.core.types import Image, to_uint8
 
 
@@ -67,9 +77,15 @@ class Stage:
 def stage_warp(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """几何校正阶段。"""
+    """几何校正阶段。
+
+    灰度输入也能处理：检测器要求三通道（它要用 HSV 的 S/V），
+    因此灰度图先临时转 BGR 只用于**检测**，变换仍作用在原图上，
+    避免「灰度链里几何校正直接报错跳过」这种静默降级。
+    """
     min_conf = float(params.get("min_confidence", 0.6))
-    quad = geometry.detect_quad(img, min_confidence=min_conf)
+    probe = img if img.ndim == 3 else cv2.cvtColor(to_uint8(img), cv2.COLOR_GRAY2BGR)
+    quad = geometry.detect_quad(probe, min_confidence=min_conf)
     if quad.is_fallback:
         note = f"角点检测失败（置信度 {quad.confidence:.2f}），保留整图"
         return img, note, {"confidence": quad.confidence, "warped": 0.0}
@@ -131,9 +147,12 @@ def stage_white_balance(
 def stage_enhance(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """对比度增强阶段：CLAHE / 直方图均衡 / 对比度拉伸，均只在亮度通道。"""
+    """对比度增强阶段：CLAHE / 直方图均衡 / 对比度拉伸 / 仅伽马，均只在亮度通道。"""
     method = str(params.get("method", "clahe"))
-    if method == "histeq":
+    if method == "none":
+        out = img
+        detail = "不增强"
+    elif method == "histeq":
         out = enhance.hist_equalize(img)
         detail = "直方图均衡"
     elif method == "stretch":
@@ -151,22 +170,41 @@ def stage_enhance(
     return out, detail, {}
 
 
+def stage_denoise(
+    img: Image, params: dict
+) -> tuple[Image, str, dict[str, float]]:
+    """去噪阶段：中值 / 双边（放在二值化与锐化之前，避免噪点被放大成笔画）。"""
+    method = str(params.get("method", "median"))
+    if method == "bilateral":
+        sigma_color = float(params.get("sigma_color", 0.05))
+        out = denoise.bilateral(img, sigma_color=sigma_color)
+        return out, f"双边 σc={sigma_color:g}", {}
+    ksize = int(params.get("ksize", 3))
+    out = denoise.median(img, ksize=ksize)
+    return out, f"中值 {max(3, ksize | 1)}×{max(3, ksize | 1)}", {}
+
+
 def stage_freq_denoise(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """频域去网纹阶段：自动找峰或使用 UI 手动选点。"""
+    """频域去网纹阶段：自动找峰或使用 UI 手动选点。
+
+    自动找峰失败时**必须可见**：陷波后若峰能量几乎没降，说明命中的是伪峰，
+    此时在 note 里写明并置 ``notch_ok=0``，而不是拿一个漂亮的 dB 数糊过去。
+    """
     manual = params.get("manual_peaks") or []
     if manual:
         peaks = [(int(du), int(dv)) for du, dv in manual]
         source = "手动选点"
     else:
         spec = freq.magnitude_spectrum(img)
+        dc_radius = int(params.get("dc_radius", 0)) or None
         peaks = freq.find_periodic_peaks(
-            spec, top_n=int(params.get("top_n", 4))
+            spec, top_n=int(params.get("top_n", 4)), dc_radius=dc_radius
         )
         source = "自动找峰"
     if not peaks:
-        return img, "未发现周期峰，跳过滤波", {"peaks": 0.0}
+        return img, "未发现周期峰，跳过滤波", {"peaks": 0.0, "notch_ok": 0.0}
 
     kind = str(params.get("kind", "butterworth"))
     out = freq.notch_filter(
@@ -176,24 +214,49 @@ def stage_freq_denoise(
     )
     drop = freq.energy_drop_db(img, out, peaks[0])
     note = f"{source} {len(peaks)} 点: {peaks[:4]}"
-    return out, note, {"peaks": float(len(peaks)), "peak_drop_db": drop}
+    ok = 1.0
+    if drop > -6.0:
+        ok = 0.0
+        note += "（峰能量未下降，疑似伪峰，请在频谱图上手动选点）"
+    return out, note, {"peaks": float(len(peaks)), "peak_drop_db": drop, "notch_ok": ok}
 
 
 def stage_restore(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """退化复原阶段：倒谱估 PSF（或手动指定）→ 维纳滤波。"""
-    if str(params.get("psf_mode", "est")) == "est":
-        angle, length = restore.estimate_psf_cepstrum(img)
-        note = f"倒谱估计 PSF: L={length}, θ={angle:.1f}°"
+    """退化复原阶段：运动/散焦 PSF（倒谱估计或手动）→ 维纳/逆滤波。"""
+    psf_type = str(params.get("psf_type", "motion"))
+    metrics: dict[str, float] = {}
+
+    if psf_type == "defocus":
+        radius = int(params.get("defocus_radius", 5))
+        psf = restore.disk_psf(max(31, radius * 4 | 1), radius)
+        note = f"散焦 PSF: r={radius}"
+        metrics["psf_radius"] = float(radius)
     else:
-        length = int(params.get("length", 9))
-        angle = float(params.get("angle_deg", 0.0))
-        note = f"手动 PSF: L={length}, θ={angle:.1f}°"
-    psf = restore.motion_psf(max(31, length * 2 | 1), length, angle)
-    k = float(params.get("K", 0.01))
-    out = restore.wiener(img, psf, K=k)
-    return out, note + f", K={k:g}", {"psf_length": float(length), "psf_angle": angle}
+        if str(params.get("psf_mode", "est")) == "est":
+            try:
+                angle, length = restore.estimate_psf_cepstrum(img)
+            except RuntimeError as exc:
+                return img, f"PSF 估计失败（{exc}），跳过复原", {"psf_length": 0.0}
+            note = f"倒谱估计 PSF: L={length}, θ={angle:.1f}°"
+        else:
+            length = int(params.get("length", 9))
+            angle = float(params.get("angle_deg", 0.0))
+            note = f"手动 PSF: L={length}, θ={angle:.1f}°"
+        psf = restore.motion_psf(max(31, length * 2 | 1), length, angle)
+        metrics["psf_length"] = float(length)
+        metrics["psf_angle"] = angle
+
+    if str(params.get("filter", "wiener")) == "inverse":
+        eps = float(params.get("eps", 1e-3))
+        out = restore.inverse_filter(img, psf, eps=eps)
+        note += f", 逆滤波 eps={eps:g}"
+    else:
+        k = float(params.get("K", 0.01))
+        out = restore.wiener(img, psf, K=k)
+        note += f", 维纳 K={k:g}"
+    return out, note, metrics
 
 
 def stage_sharpen(
@@ -222,11 +285,24 @@ WB_SPEC: list[ParamSpec] = [
 ENHANCE_SPEC: list[ParamSpec] = [
     EnumParam(
         "method", "增强方法", "clahe",
-        (("clahe", "CLAHE"), ("histeq", "直方图均衡"), ("stretch", "对比度拉伸")),
+        (
+            ("clahe", "CLAHE"),
+            ("histeq", "直方图均衡"),
+            ("stretch", "对比度拉伸"),
+            ("none", "不增强（仅伽马）"),
+        ),
     ),
     NumParam("clip_limit", "CLAHE 削波", 2.0, 0.1, 10.0, 0.1),
     NumParam("grid_size", "CLAHE 网格", 8, 2, 16, 1, integer=True),
     NumParam("gamma", "伽马", 1.0, 0.2, 3.0, 0.05),
+]
+DENOISE_SPEC: list[ParamSpec] = [
+    EnumParam(
+        "method", "去噪方法", "median",
+        (("median", "中值滤波"), ("bilateral", "双边滤波")),
+    ),
+    NumParam("ksize", "中值窗口(奇数)", 3, 3, 9, 2, integer=True),
+    NumParam("sigma_color", "双边色彩σ", 0.05, 0.01, 0.30, 0.01),
 ]
 BINARIZE_SPEC: list[ParamSpec] = [
     EnumParam(
@@ -247,15 +323,26 @@ FREQ_SPEC: list[ParamSpec] = [
     NumParam("top_n", "自动找峰数量", 4, 1, 12, 1, integer=True),
     NumParam("radius", "陷波半径(0=自适应)", 0, 0, 40, 1, integer=True),
     NumParam("order", "Butterworth 阶数", 4.0, 1.0, 16.0, 1.0),
+    NumParam("dc_radius", "DC 屏蔽半径(0=自适应)", 0, 0, 96, 1, integer=True),
 ]
 RESTORE_SPEC: list[ParamSpec] = [
+    EnumParam(
+        "psf_type", "PSF 类型", "motion",
+        (("motion", "运动模糊"), ("defocus", "散焦")),
+    ),
     EnumParam(
         "psf_mode", "PSF 来源", "est",
         (("est", "倒谱自动估计"), ("manual", "手动指定")),
     ),
     NumParam("length", "模糊长度(手动)", 9.0, 1.0, 51.0, 1.0, integer=True),
     NumParam("angle_deg", "模糊角度(手动)", 0.0, -90.0, 90.0, 1.0),
+    NumParam("defocus_radius", "散焦半径(像素)", 5, 1, 20, 1, integer=True),
+    EnumParam(
+        "filter", "复原滤波器", "wiener",
+        (("wiener", "维纳滤波"), ("inverse", "逆滤波")),
+    ),
     NumParam("K", "维纳噪信比", 0.01, 1e-5, 1.0, 0.001),
+    NumParam("eps", "逆滤波正则 ε", 1e-3, 1e-6, 0.5, 0.001),
 ]
 SHARPEN_SPEC: list[ParamSpec] = [
     NumParam("amount", "锐化强度", 1.0, 0.0, 3.0, 0.1),
@@ -264,15 +351,18 @@ SHARPEN_SPEC: list[ParamSpec] = [
 
 
 def build_default_stages() -> list[Stage]:
-    """默认处理链：校正 → 光照 → 白平衡 → 增强 → 去网纹 → 复原 → 锐化 → 二值化。
+    """默认处理链：校正 → 光照 → 白平衡 → 增强 → 去噪 → 去网纹 → 复原 → 锐化 → 二值化。
 
-    除校正与光照归一外均默认关闭，按需在 UI 勾选。
+    去噪排在增强之后、去网纹与复原之前：先让噪声在增强阶段不被同步放大，
+    再让后续的陷波与维纳滤波在干净一点的输入上工作（维纳本身会放大噪声）。
+    除校正、光照归一、二值化外均默认关闭，按需在 UI 勾选。
     """
     stages = [
         Stage("warp", "几何校正", stage_warp, WARP_SPEC),
         Stage("illumination", "光照归一", stage_illumination, ILLUM_SPEC),
         Stage("white_balance", "白平衡", stage_white_balance, WB_SPEC, enabled=False),
         Stage("enhance", "对比度增强", stage_enhance, ENHANCE_SPEC, enabled=False),
+        Stage("denoise", "去噪", stage_denoise, DENOISE_SPEC, enabled=False),
         Stage("freq", "去网纹", stage_freq_denoise, FREQ_SPEC, enabled=False),
         Stage("restore", "退化复原", stage_restore, RESTORE_SPEC, enabled=False),
         Stage("sharpen", "锐化", stage_sharpen, SHARPEN_SPEC, enabled=False),

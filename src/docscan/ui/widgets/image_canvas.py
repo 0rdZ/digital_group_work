@@ -29,7 +29,9 @@ class ImageCanvas(ttk.Frame):
             mode 为 ``"fit"`` 或 ``"manual"``。
     """
 
-    def __init__(self, master, theme: Theme, on_pixel_move=None, on_zoom_changed=None, **kwargs) -> None:
+    def __init__(
+        self, master, theme: Theme, on_pixel_move=None, on_zoom_changed=None, **kwargs
+    ) -> None:
         super().__init__(master, **kwargs)
         self._theme = theme
         self._pil: PILImage.Image | None = None

@@ -117,7 +117,7 @@ class AppController:
                         kind="done", result=result, psnr=psnr, ssim=ssim, aligned=aligned
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 —— 任何异常都要回传 UI 而非杀死线程
+            except Exception as exc:
                 q.put(QueueMessage(kind="error", error=str(exc)))
 
         self.worker = threading.Thread(target=worker, name="docscan-worker", daemon=True)
@@ -140,6 +140,24 @@ class AppController:
         stage = self.runner.get_stage(name)
         stage.reset_params()
         self.view.log(f"阶段「{stage.label}」参数已恢复默认")
+
+    # ---- 预设 ----
+
+    def save_preset(self, path: str | Path) -> None:
+        """把当前阶段开关与参数存成 JSON 预设。"""
+        from docscan.pipeline.config import PipelineConfig
+
+        written = PipelineConfig.from_stages(self.stages).save(path)
+        self.view.log(f"预设已保存：{written}")
+        self.view.set_status(f"预设已保存：{Path(written).name}")
+
+    def load_preset(self, path: str | Path) -> None:
+        """从 JSON 预设恢复阶段开关与参数（未识别的键忽略）。"""
+        from docscan.pipeline.config import PipelineConfig
+
+        PipelineConfig.load(path).apply_to(self.stages)
+        self.view.log(f"预设已加载：{Path(path).name}")
+        self.view.set_status(f"预设已加载：{Path(path).name}")
 
     def apply_manual_peaks(self, points: list[tuple[int, int]]) -> None:
         """频谱视图选点 → 写入去网纹阶段参数并启用。"""

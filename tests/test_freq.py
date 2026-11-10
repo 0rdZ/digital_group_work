@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from conftest import add_stripes, make_page
-from docscan.core import freq, metrics
+from docscan.core import colorspace, freq, metrics
 
 SIZE = 256  # 2 的幂，条纹波长 32 → f0 恰好落在第 8 个 bin
 
@@ -73,6 +73,27 @@ class TestFindPeaks:
         spec = freq.magnitude_spectrum(striped)
         peaks = freq.find_periodic_peaks(spec, dc_radius=20)
         assert all(abs(du) > 20 or abs(dv) > 20 or (du**2 + dv**2) > 400 for du, dv in peaks)
+
+    def test_short_wavelength_moire_not_masked_by_dc(self):
+        """回归：短周期摩尔纹的峰半径只有 30~40 bin，不能被 DC 屏蔽圈吞掉。
+
+        历史上 DC 半径取短边的 1/24（1024 → 42 bin），而 λ=28 的条纹峰在
+        半径 36.6 处，正好被屏蔽 → 自动找峰只能返回次强的伪峰，陷波后
+        条纹纹丝不动、指标却显示「下降 45 dB」。
+        """
+        size = 1024
+        blank = np.full((size, size), 0.6, np.float32)
+        striped = add_stripes(blank, wavelength=28, angle_deg=25.0, amplitude=0.2)
+        spec = freq.magnitude_spectrum(striped)
+        peaks = freq.find_periodic_peaks(spec, top_n=2)
+        expected = (round(size / 28 * np.cos(np.deg2rad(25))),
+                    round(size / 28 * np.sin(np.deg2rad(25))))
+        assert any(
+            abs(du - expected[0]) <= 2 and abs(dv - expected[1]) <= 2 for du, dv in peaks
+        ), f"期望 {expected}，实际 {peaks}"
+
+        out = freq.notch_filter(striped, peaks, kind="butterworth", radius=4, order=4)
+        assert freq.energy_drop_db(striped, out, expected) < -40.0
 
 
 class TestNotchMasks:
@@ -155,6 +176,21 @@ class TestNotchFilter:
         )
         assert r_bw < r_ideal, f"ideal={r_ideal:.4f} butterworth={r_bw:.4f}"
         assert (r_ideal - r_bw) / r_ideal > 0.03  # 区分度至少 3%
+
+    def test_color_input_keeps_three_channels(self):
+        """彩色图经陷波后仍是三通道，且色度不被改写。
+
+        早期实现内部转灰度后直接返回，导致勾选「去网纹」就把彩色扫描件
+        变成了灰度件——后续白平衡、彩色导出全部失效。
+        """
+        page = make_page(SIZE, SIZE)  # BGR uint8
+        striped = add_stripes(page, wavelength=32, amplitude=0.25)
+        out = freq.notch_filter(striped, [(8, 0), (-8, 0)], kind="butterworth", radius=3)
+        assert np.asarray(out).ndim == 3
+        h0, s0, _ = colorspace.bgr_to_hsv(striped)
+        h1, s1, _ = colorspace.bgr_to_hsv(out)
+        assert float(np.abs(h1 - h0).max()) < 1.0  # 色相基本不变
+        assert float(np.abs(s1 - s0).max()) < 0.02
 
 
 class TestMetrics:

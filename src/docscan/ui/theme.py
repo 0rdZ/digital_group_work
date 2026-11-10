@@ -111,10 +111,7 @@ class Theme:
             sv_ok = True
         self.engine = "sv" if sv_ok else "clam"
 
-        if sv_ok:
-            base = SV_DARK if self.dark else SV_LIGHT
-        else:
-            base = DARK if self.dark else LIGHT
+        base = (SV_DARK if self.dark else SV_LIGHT) if sv_ok else DARK if self.dark else LIGHT
         self.colors = dict(base)
 
         style = ttk.Style(root)

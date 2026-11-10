@@ -143,7 +143,7 @@ class StageList(ttk.Frame):
     def _build_num_control(
         self, parent: ttk.Frame, row: int, stage: Stage, spec: NumParam
     ) -> None:
-        decimals = _decimals_of(spec.step)
+        _decimals_of(spec.step)
         var = tk.StringVar(value=_fmt(stage.params.get(spec.key, spec.default), spec))
 
         def commit(source: str) -> None:
@@ -154,7 +154,7 @@ class StageList(ttk.Frame):
                 return
             value = min(max(raw, spec.minimum), spec.maximum)
             if spec.integer:
-                value = float(int(round(value)))
+                value = float(round(value))
             var.set(_fmt(value, spec))
             stage.params[spec.key] = int(value) if spec.integer else value
             if source == "user" and self._on_param_change:
@@ -164,13 +164,16 @@ class StageList(ttk.Frame):
             parent, from_=spec.minimum, to=spec.maximum, orient=tk.HORIZONTAL,
         )
         scale.set(float(stage.params.get(spec.key, spec.default)))
-        entry = ttk.Entry(parent, textvariable=var, width=8, justify=tk.CENTER, font=self._theme.font("xs"))
+        entry = ttk.Entry(
+            parent, textvariable=var, width=8, justify=tk.CENTER,
+            font=self._theme.font("xs"),
+        )
 
         def on_drag(_v: str) -> None:
             # 拖动即时写参数，但不打日志（松手/回车才算一次「用户修改」）
             value = float(scale.get())
             if spec.integer:
-                value = float(int(round(value)))
+                value = float(round(value))
             stage.params[spec.key] = int(value) if spec.integer else value
             var.set(_fmt(value, spec))
 
@@ -268,5 +271,5 @@ def _decimals_of(step: float) -> int:
 
 def _fmt(value: float, spec: NumParam) -> str:
     if spec.integer:
-        return str(int(round(value)))
+        return str(round(value))
     return f"{value:.{_decimals_of(spec.step)}f}"
