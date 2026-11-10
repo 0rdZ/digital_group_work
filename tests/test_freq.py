@@ -95,6 +95,37 @@ class TestFindPeaks:
         out = freq.notch_filter(striped, peaks, kind="butterworth", radius=4, order=4)
         assert freq.energy_drop_db(striped, out, expected) < -40.0
 
+    @pytest.mark.parametrize(("wavelength", "angle_deg"), [(64, 0.0), (72, 0.0), (80, 90.0)])
+    def test_long_period_moire_not_masked_by_dc(self, wavelength, angle_deg):
+        """回归：长周期网纹的峰半径只有 12~16 bin，固定比例半径会二次吞峰。
+
+        半径取短边 1/64（1024 → 16 bin）时，λ=64 的轴向峰恰好落在半径 16 上，
+        被连同 DC 一起挖掉 → 返回 ``(0, ±20)`` 这类纵向伪峰，陷波后 SSIM
+        0.7486 **低于不处理**的 0.7583，且不报错。按最大周期推算半径
+        （0.5·N/λ_max → 8 bin）后该场景可分辨。
+        """
+        size = 1024
+        base = np.full((size, size), 0.35, np.float32)
+        striped = add_stripes(base, wavelength=wavelength, angle_deg=angle_deg,
+                              amplitude=0.2)
+        peaks = freq.find_periodic_peaks(freq.magnitude_spectrum(striped), top_n=2)
+
+        expected = (size / wavelength * np.cos(np.deg2rad(angle_deg)),
+                    size / wavelength * np.sin(np.deg2rad(angle_deg)))
+        assert any(
+            abs(abs(du) - abs(expected[0])) <= 2 and abs(abs(dv) - abs(expected[1])) <= 2
+            for du, dv in peaks
+        ), f"λ={wavelength} 期望 ±{np.round(expected, 1)}，实际 {peaks}"
+
+        out = freq.notch_filter(striped, peaks, kind="butterworth", radius=4, order=4)
+        before = metrics.ssim(base, striped)
+        after = metrics.ssim(base, out)
+        assert after > before + 0.1, f"陷波后 SSIM {after:.4f} 未显著优于 {before:.4f}"
+
+    def test_rejects_nonpositive_max_period(self):
+        with pytest.raises(ValueError):
+            freq.find_periodic_peaks(np.zeros((64, 64)), max_period_px=0)
+
 
 class TestNotchMasks:
     def test_mask_symmetry(self):

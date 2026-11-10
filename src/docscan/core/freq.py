@@ -43,6 +43,7 @@ def find_periodic_peaks(
     dc_radius: int | None = None,
     threshold_rel: float = 0.2,
     min_prominence: float = 0.5,
+    max_period_px: float = 64.0,
 ) -> list[tuple[int, int]]:
     """在（已中心化的）对数幅度谱上找周期峰。
 
@@ -54,24 +55,35 @@ def find_periodic_peaks(
     λ 为条纹波长），短周期网纹（λ ≤ 30 px @1024）只有 30~40 bin，
     一旦 DC 半径大于它，真实峰会被当成「低频内容」屏蔽掉，``argmax``
     只能取到次强的伪峰——指标显示「能量下降 45 dB」，视觉上条纹却纹丝不动。
-    因此默认半径取短边的 1/64（1024 → 16 bin），并额外做显著性校验。
+    因此半径按**待检最大周期**推算 ``0.5·N/λ_max``，而不是取一个固定比例：
+    固定比例在长周期一端会再次踩坑（1024² 取 1/64 = 16 bin 时，λ=64 的
+    轴向峰恰好落在半径 16 上被一并挖掉，陷波后 SSIM 0.7486 反而低于不处理
+    的 0.7583）。另做显著性校验兜住平坦谱上的伪峰。
 
     Args:
         spec_log: magnitude_spectrum 的输出。
         top_n: 最多返回几个峰。
         min_distance: 峰间最小间距（像素），默认为短边的 1/32。
-        dc_radius: DC 屏蔽半径，默认为短边的 1/64（须小于最短待检波长对应的半径）。
+        dc_radius: DC 屏蔽半径，显式给定则覆盖 max_period_px 的推算。
         threshold_rel: 相对阈值（相对屏蔽 DC 后的最大值）。
         min_prominence: 峰相对「背景中位数」的最小超出比例，0 表示不校验。
+        max_period_px: 期望能检出的最大条纹周期（像素），默认 64。
 
     Returns:
         [(du, dv), ...]，按能量从高到低。
+
+    Raises:
+        ValueError: max_period_px 非正。
     """
     spec = np.asarray(spec_log, dtype=np.float64)
     h, w = spec.shape
     cy, cx = h // 2, w // 2
+    if max_period_px <= 0:
+        raise ValueError(f"max_period_px 必须为正，收到 {max_period_px}")
     min_distance = min_distance if min_distance is not None else max(8, min(h, w) // 32)
-    dc_radius = dc_radius if dc_radius is not None else max(4, min(h, w) // 64)
+    if dc_radius is None:
+        # 峰半径 = N/λ；取一半留出安全边界，保证 λ ≤ max_period_px 的峰不被吞
+        dc_radius = max(6, int(0.5 * min(h, w) / float(max_period_px)))
 
     work = spec.copy()
     yy, xx = np.ogrid[:h, :w]

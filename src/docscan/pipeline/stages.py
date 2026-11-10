@@ -200,7 +200,10 @@ def stage_freq_denoise(
         spec = freq.magnitude_spectrum(img)
         dc_radius = int(params.get("dc_radius", 0)) or None
         peaks = freq.find_periodic_peaks(
-            spec, top_n=int(params.get("top_n", 4)), dc_radius=dc_radius
+            spec,
+            top_n=int(params.get("top_n", 4)),
+            dc_radius=dc_radius,
+            max_period_px=float(params.get("max_period_px", 64.0)),
         )
         source = "自动找峰"
     if not peaks:
@@ -324,6 +327,7 @@ FREQ_SPEC: list[ParamSpec] = [
     NumParam("radius", "陷波半径(0=自适应)", 0, 0, 40, 1, integer=True),
     NumParam("order", "Butterworth 阶数", 4.0, 1.0, 16.0, 1.0),
     NumParam("dc_radius", "DC 屏蔽半径(0=自适应)", 0, 0, 96, 1, integer=True),
+    NumParam("max_period_px", "最大待检周期(px)", 64, 8, 256, 8),
 ]
 RESTORE_SPEC: list[ParamSpec] = [
     EnumParam(
