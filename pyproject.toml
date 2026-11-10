@@ -25,6 +25,7 @@ dev = [
     "pytest>=8",
     "pytest-cov",
     "scikit-image>=0.22",
+    "matplotlib>=3.8",
     "ruff",
     "pyinstaller>=6.0",
 ]

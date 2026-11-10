@@ -229,14 +229,17 @@ def run(*, out_dir: Path, data_dir: Path | None = None) -> Path:
         )
 
     csv_path = out_dir / "e2e_summary.csv"
-    header = "scene,cer,baseline_cer,psnr_db,baseline_psnr_db,ssim,baseline_ssim,time_ms,stages"
-    lines = [header] + [
-        f"{r['scene']},{r['cer']:.4f},{r['baseline_cer']:.4f},"
-        f"{r['psnr']:.2f},{r['baseline_psnr']:.2f},"
-        f"{r['ssim']:.4f},{r['baseline_ssim']:.4f},{r['time_ms']:.0f},{r['stages']}"
+    header = ["scene", "cer", "baseline_cer", "psnr_db", "baseline_psnr_db",
+              "ssim", "baseline_ssim", "time_ms", "stages"]
+    utils.write_csv(csv_path, header, [
+        [
+            r["scene"], f"{r['cer']:.4f}", f"{r['baseline_cer']:.4f}",
+            f"{r['psnr']:.2f}", f"{r['baseline_psnr']:.2f}",
+            f"{r['ssim']:.4f}", f"{r['baseline_ssim']:.4f}",
+            f"{r['time_ms']:.0f}", r["stages"],
+        ]
         for r in rows
-    ]
-    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    ])
     _bar(rows, out_dir / "e2e_summary.png")
     log.info("已写出 %s", csv_path)
     return csv_path

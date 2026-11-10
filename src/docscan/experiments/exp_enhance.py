@@ -107,13 +107,15 @@ def run(*, out_dir: Path) -> Path:
         )
 
     csv_path = out_dir / "enhance_compare.csv"
-    header = "method,label,cer,std,local_contrast,sharpness,psnr_db"
-    lines = [header] + [
-        f"{r['method']},{r['label']},{r['cer']:.4f},{r['std']:.4f},"
-        f"{r['local_contrast']:.4f},{r['sharpness']:.5f},{r['psnr']:.2f}"
+    header = ["method", "label", "cer", "std", "local_contrast", "sharpness", "psnr_db"]
+    # label 是自由文本（如「伽马 γ=0.6」），必须走转义写入
+    utils.write_csv(csv_path, header, [
+        [
+            r["method"], r["label"], f"{r['cer']:.4f}", f"{r['std']:.4f}",
+            f"{r['local_contrast']:.4f}", f"{r['sharpness']:.5f}", f"{r['psnr']:.2f}",
+        ]
         for r in rows
-    ]
-    csv_path.write_text("\n".join(lines), encoding="utf-8")
+    ])
     _grid(images, rows, out_dir / "enhance_compare.png")
     log.info("已写出 %s", csv_path)
     return csv_path
