@@ -144,11 +144,35 @@ def stage_white_balance(
     return out, f"{method}, strength={strength:g}", {}
 
 
+# 增强方法名归一：``he`` / ``gamma`` 是对外文档与旧实验脚本里的写法，
+# 内部统一到 ENHANCE_SPEC 的取值，避免「传了但没生效」的静默降级。
+_ENHANCE_METHODS = frozenset({"clahe", "histeq", "stretch", "none"})
+_ENHANCE_ALIASES: dict[str, str] = {
+    "clahe": "clahe",
+    "histeq": "histeq",
+    "he": "histeq",          # 组员版实验脚本用 he
+    "hist_eq": "histeq",
+    "stretch": "stretch",
+    "none": "none",
+    "gamma": "none",         # 只做伽马：空间域不动，仅走后面的 gamma 分支
+}
+
+
 def stage_enhance(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """对比度增强阶段：CLAHE / 直方图均衡 / 对比度拉伸 / 仅伽马，均只在亮度通道。"""
-    method = str(params.get("method", "clahe"))
+    """对比度增强阶段：CLAHE / 直方图均衡 / 对比度拉伸 / 仅伽马，均只在亮度通道。
+
+    ``method`` 与 ``ENHANCE_SPEC`` 的下拉选项一一对应。**未知方法必须抛错**：
+    早期实现把未知值落到 ``else`` 分支按 CLAHE 跑，实验脚本传 ``method="he"``
+    时会静默产出「四种方法其实只跑了三种」的数据，指标看着正常却无法复现。
+    """
+    method = _ENHANCE_ALIASES.get(str(params.get("method", "clahe")).strip().lower())
+    if method is None:
+        raise ValueError(
+            f"未知增强方法：{params.get('method')!r}，可选 {sorted(_ENHANCE_METHODS)}"
+        )
+
     if method == "none":
         out = img
         detail = "不增强"
@@ -156,8 +180,10 @@ def stage_enhance(
         out = enhance.hist_equalize(img)
         detail = "直方图均衡"
     elif method == "stretch":
-        out = enhance.contrast_stretch(img)
-        detail = "对比度拉伸 1%~99%"
+        lo = float(params.get("low_pct", 1.0))
+        hi = float(params.get("high_pct", 99.0))
+        out = enhance.contrast_stretch(img, low_pct=lo, high_pct=hi)
+        detail = f"对比度拉伸 {lo:g}%~{hi:g}%"
     else:
         clip = float(params.get("clip_limit", 2.0))
         grid = int(params.get("grid_size", 8))
@@ -224,11 +250,38 @@ def stage_freq_denoise(
     return out, note, {"peaks": float(len(peaks)), "peak_drop_db": drop, "notch_ok": ok}
 
 
+_PSF_TYPES = frozenset({"motion", "defocus"})
+_PSF_ALIASES: dict[str, str] = {
+    "motion": "motion",
+    "disk": "defocus",       # 组员版用 disk 指圆盘 PSF
+    "defocus": "defocus",
+}
+_PSF_MODES = frozenset({"est", "manual"})
+_FILTERS = frozenset({"wiener", "inverse"})
+
+
 def stage_restore(
     img: Image, params: dict
 ) -> tuple[Image, str, dict[str, float]]:
-    """退化复原阶段：运动/散焦 PSF（倒谱估计或手动）→ 维纳/逆滤波。"""
-    psf_type = str(params.get("psf_type", "motion"))
+    """退化复原阶段：运动/散焦 PSF（倒谱估计或手动）→ 维纳/逆滤波。
+
+    三处枚举（``psf_type`` / ``psf_mode`` / ``filter``）**未知值一律抛错**。
+    早期实现把它们落到 ``else`` 分支：传 ``psf_type="disk"`` 会静默用线段 PSF
+    处理散焦（实测 SSIM 从 0.9850 掉到 0.9712，比不处理还差），传错
+    ``filter`` 会静默走维纳——两者都不报错，只会产出错误数据。
+    """
+    psf_type = _PSF_ALIASES.get(str(params.get("psf_type", "motion")).strip().lower())
+    if psf_type is None:
+        raise ValueError(
+            f"未知 PSF 类型：{params.get('psf_type')!r}，可选 {sorted(_PSF_TYPES)}"
+        )
+    psf_mode = str(params.get("psf_mode", "est")).strip().lower()
+    if psf_mode not in _PSF_MODES:
+        raise ValueError(f"未知 PSF 来源：{psf_mode!r}，可选 {sorted(_PSF_MODES)}")
+    filter_kind = str(params.get("filter", "wiener")).strip().lower()
+    if filter_kind not in _FILTERS:
+        raise ValueError(f"未知复原滤波器：{filter_kind!r}，可选 {sorted(_FILTERS)}")
+
     metrics: dict[str, float] = {}
 
     if psf_type == "defocus":
@@ -237,7 +290,7 @@ def stage_restore(
         note = f"散焦 PSF: r={radius}"
         metrics["psf_radius"] = float(radius)
     else:
-        if str(params.get("psf_mode", "est")) == "est":
+        if psf_mode == "est":
             try:
                 angle, length = restore.estimate_psf_cepstrum(img)
             except RuntimeError as exc:
@@ -251,7 +304,7 @@ def stage_restore(
         metrics["psf_length"] = float(length)
         metrics["psf_angle"] = angle
 
-    if str(params.get("filter", "wiener")) == "inverse":
+    if filter_kind == "inverse":
         eps = float(params.get("eps", 1e-3))
         out = restore.inverse_filter(img, psf, eps=eps)
         note += f", 逆滤波 eps={eps:g}"
@@ -297,6 +350,8 @@ ENHANCE_SPEC: list[ParamSpec] = [
     ),
     NumParam("clip_limit", "CLAHE 削波", 2.0, 0.1, 10.0, 0.1),
     NumParam("grid_size", "CLAHE 网格", 8, 2, 16, 1, integer=True),
+    NumParam("low_pct", "拉伸下分位(%)", 1.0, 0.0, 10.0, 0.5),
+    NumParam("high_pct", "拉伸上分位(%)", 99.0, 90.0, 100.0, 0.5),
     NumParam("gamma", "伽马", 1.0, 0.2, 3.0, 0.05),
 ]
 DENOISE_SPEC: list[ParamSpec] = [
