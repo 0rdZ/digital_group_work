@@ -60,6 +60,23 @@ def _apply_policy(stages: list[Stage], policy: dict[str, bool]) -> None:
         stage.enabled = bool(policy.get(stage.name, False))
 
 
+def _resolve_scene(name: str, *, synthetic: bool) -> str:
+    """把输入文件名映射到场景名。
+
+    合成路径的场景名来自固定列表，出现未知值说明代码与数据脱节；此时
+    **必须抛错**——静默按 ``normal`` 跑会让「退化图根本没退化」的行混进
+    汇总表（历史缺陷 D2：defocus 与 shadow 的 PSNR 同为 20.32）。
+    真实照片路径没有场景标注，允许回退并记 warning。
+    """
+    scene = name.split("_")[0].lower()
+    if scene in STAGE_POLICY:
+        return scene
+    if synthetic:
+        raise ValueError(f"未知场景 {scene!r}，可选 {sorted(STAGE_POLICY)}")
+    log.warning("%s 场景名 %r 未识别，按 normal 处理", name, scene)
+    return "normal"
+
+
 def _make_stages(scene: str) -> list[Stage]:
     """按场景生成一套全新的阶段对象（含该场景的已知退化参数）。"""
     stages = build_default_stages()
@@ -146,9 +163,7 @@ def run(*, out_dir: Path, data_dir: Path | None = None) -> Path:
 
     rows: list[dict] = []
     for name, img, text in inputs:
-        scene = name.split("_")[0].lower()
-        if scene not in STAGE_POLICY:
-            scene = "normal"
+        scene = _resolve_scene(name, synthetic=synthetic)
 
         if synthetic:
             if scene == "normal":
