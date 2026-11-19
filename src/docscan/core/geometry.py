@@ -38,17 +38,17 @@ def _polygon_area(pts: np.ndarray) -> float:
 
 
 def order_points(points: np.ndarray) -> np.ndarray:
-    """把任意顺序的四个点规范为 左上、右上、右下、左下。
+    """将凸四边形的四个角点按图像中的顺时针方向排列。
 
-    做法：按质心极角排序得到环序 → 用鞋带公式统一绕向 → 旋转环序使
-    最小 y（同 y 取最小 x）的点排在首位。相比 ``sum/diff`` 排序，该写法在
-    极端退化四边形（细长、强旋转）上不会出现两点落到同一象限的错误。
+    先按各点相对四点中心的极角升序排列，再将 x + y 最小的角移到首位。
+    对于接近正向拍摄的页面，该点通常是纸张左上角。页面大角度旋转时，
+    选出的起点可能对应纸张的其他角。
 
     Args:
         points: (4, 2) 任意顺序的四个点。
 
     Returns:
-        (4, 2) float32，顺序为 tl, tr, br, bl。
+        (4, 2) float32，页面接近正向时通常依次为左上 (tl)、右上 (tr)、右下 (br)、左下 (bl)。
     """
     pts = np.asarray(points, dtype=np.float64).reshape(4, 2)
     centroid = pts.mean(axis=0)
@@ -56,12 +56,14 @@ def order_points(points: np.ndarray) -> np.ndarray:
     order = np.argsort(angles, kind="stable")
     pts = pts[order]
 
-    x, y = pts[:, 0], pts[:, 1]
-    signed = float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
-    if signed < 0:
-        pts = pts[::-1]
-
-    start = int(np.lexsort((pts[:, 0], pts[:, 1]))[0])
+    # 按质心角排序后已经顺时针定序，无需使用鞋带公式统一绕向
+    # x, y = pts[:, 0], pts[:, 1]
+    # signed = float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+    # if signed < 0:
+    #     pts = pts[::-1]
+    
+    #  选 x + y 最小的角作为起点
+    start = int(np.argmin(pts[:, 0] + pts[:, 1]))
     pts = np.roll(pts, -start, axis=0)
     return pts.astype(np.float32)
 
