@@ -90,6 +90,16 @@ class TestDetectQuad:
         assert detected.source == "auto"
         assert polygon_iou(detected.points, corners) > 0.95
 
+    def test_low_contrast_page_with_dark_and_bright_background_details(self):
+        img = np.full((500, 650, 3), 180, dtype=np.uint8)
+        corners = np.int32([[90, 150], [370, 45], [555, 320], [240, 450]])
+        cv2.fillConvexPoly(img, corners, (188, 188, 188))
+        cv2.circle(img, (35, 30), 30, (20, 20, 20), -1)
+        cv2.circle(img, (612, 450), 30, (250, 250, 250), -1)
+        detected = geometry.detect_quad(img)
+        assert detected.source == "auto"
+        assert polygon_iou(detected.points, corners) > 0.98
+
     def test_detects_straight_page(self, synthetic_page):
         img = paste_on_background(
             synthetic_page(600, 800),

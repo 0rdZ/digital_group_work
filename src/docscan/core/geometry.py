@@ -275,7 +275,8 @@ def detect_quad(
     best_quad: np.ndarray | None = None
     best_score = -1.0
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 30, 90)
+    smoothed = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(smoothed, 30, 90)
     candidates = _edge_quads(edges, kernel)
     # 纸面与桌面灰度相近时，用饱和度变化补齐灰度边缘的断点。
     saturation = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)[:, :, 1]
@@ -287,14 +288,26 @@ def detect_quad(
     for mask in _paper_masks(small):
         candidates.extend(_contours_to_quads(mask, kernel))
 
-    for candidate in candidates:
-        cand = order_points(candidate)
-        support = _edge_support(cand, distance, k / 2)
-        score = score_quad(cand, img_area) * (0.6 + 0.4 * support)
-        if _touches_border(cand, sw, sh):
-            score *= 0.75
-        if score > best_score:
-            best_score, best_quad = score, cand
+    def consider(quads: list[np.ndarray], edge_distance: np.ndarray) -> None:
+        nonlocal best_quad, best_score
+        for candidate in quads:
+            cand = order_points(candidate)
+            support = _edge_support(cand, edge_distance, k / 2)
+            score = score_quad(cand, img_area) * (0.6 + 0.4 * support)
+            if _touches_border(cand, sw, sh):
+                score *= 0.75
+            if score > best_score:
+                best_score, best_quad = score, cand
+
+    consider(candidates, distance)
+    if best_score < min_confidence:
+        # 同色浅背景可能只留下很弱的纸边。使用小核闭合，减少弱纹理互相粘连。
+        weak_edges = cv2.Canny(smoothed, 8, 24)
+        fine_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        weak_candidates = _edge_quads(weak_edges, fine_kernel)
+        if weak_candidates:
+            weak_distance = cv2.distanceTransform(cv2.bitwise_not(weak_edges), cv2.DIST_L2, 3)
+            consider(weak_candidates, weak_distance)
 
     if best_quad is None or best_score < min_confidence:
         return full_image_quad(img.shape, confidence=max(best_score, 0.0))
