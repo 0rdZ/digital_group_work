@@ -48,6 +48,15 @@ class TestDetectQuad:
         iou = polygon_iou(quad.points, gt)
         assert iou > 0.95, f"IoU={iou:.3f}"
 
+    def test_detects_full_page_under_shadow(self):
+        img = np.full((600, 800, 3), 60, dtype=np.uint8)
+        img[60:540, 180:620] = 235
+        img[60:540, 180:400] = 90
+        corners = np.array([[180, 60], [619, 60], [619, 539], [180, 539]], dtype=np.float32)
+        detected = geometry.detect_quad(img)
+        assert detected.source == "auto"
+        assert polygon_iou(detected.points, corners) > 0.95
+
     def test_detects_straight_page(self, synthetic_page):
         img = paste_on_background(
             synthetic_page(600, 800),

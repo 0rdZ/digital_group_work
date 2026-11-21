@@ -6,8 +6,8 @@
         → 凸包 + approxPolyDP 取四点 → 多候选打分 → 透视变换
 
 设计要点：
-* 掩膜不用固定亮度阈值（暗光下会失效），改用 Otsu 全局自动阈值 + 低饱和高亮双路，
-  两路结果一起参与候选打分，任一路成功即可；
+* 掩膜不用固定亮度阈值（暗光下会失效），改用 Otsu 全局自动阈值 + 低饱和高亮掩膜，
+  暗背景下另在较暗像素中估计阈值，使阴影中的纸面也能参与候选打分；
 * 检测失败绝不静默：返回 ``source="fallback"`` 的整图四边形，调用方必须提示；
 * 四点排序用「按质心极角排序，再以 x + y 最小的角为起点」，对 4! 种输入排列结果完全一致。
 """
@@ -86,7 +86,7 @@ def _paper_masks(bgr: Image) -> list[np.ndarray]:
     masks: list[np.ndarray] = []
 
     # 路 1：灰度 Otsu。按整幅图的灰度分布自动选一个阈值，适用于纸面比背景亮的情况。
-    _, m_gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    threshold, m_gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     masks.append(m_gray)
 
     # 路 2：HSV 的 V 通道 Otsu + 低饱和约束。纸面「亮且不彩」，能排除彩色桌面。
@@ -95,6 +95,17 @@ def _paper_masks(bgr: Image) -> list[np.ndarray]:
     _, m_v = cv2.threshold(v_ch, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     low_sat = (s_ch < 70).astype(np.uint8) * 255
     masks.append(cv2.bitwise_and(m_v, low_sat))
+
+    # 亮区阈值可能只选中受光的半页。在暗部再次分割背景与受阴影的纸面。
+    dark_pixels = gray[gray <= threshold]
+    if dark_pixels.size and dark_pixels.min() < dark_pixels.max():
+        shadow_threshold, _ = cv2.threshold(
+            dark_pixels, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        border = np.concatenate((gray[0], gray[-1], gray[:, 0], gray[:, -1]))
+        if shadow_threshold > 0 and np.percentile(border, 95) <= shadow_threshold:
+            _, shadow_mask = cv2.threshold(gray, shadow_threshold, 255, cv2.THRESH_BINARY)
+            masks.append(shadow_mask)
 
     return masks
 
