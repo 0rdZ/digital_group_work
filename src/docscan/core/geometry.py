@@ -102,8 +102,8 @@ def _paper_masks(bgr: Image) -> list[np.ndarray]:
 def _quad_metrics(quad: np.ndarray, img_area: float) -> dict[str, float]:
     """计算候选四边形的几何指标。"""
     area = _polygon_area(quad)
-    hull = cv2.convexHull(quad.astype(np.int32))
-    hull_area = _polygon_area(hull.reshape(-1, 2).astype(np.float64)) or 1.0
+    hull = cv2.convexHull(quad)
+    hull_area = _polygon_area(hull.reshape(-1, 2)) or 1.0
 
     cos_sum = 0.0
     for i in range(4):
