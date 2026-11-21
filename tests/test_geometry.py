@@ -78,6 +78,18 @@ class TestDetectQuad:
         assert detected.source == "auto"
         assert polygon_iou(detected.points, corners) > 0.95
 
+    def test_oblique_page_with_similar_gray_background(self):
+        # 下半页与彩色桌面灰度几乎相同，只有颜色差异能补全这段纸边。
+        img = np.full((560, 780, 3), (60, 120, 150), dtype=np.uint8)
+        corners = np.int32([[155, 85], [590, 140], [690, 460], [85, 490]])
+        page = np.zeros(img.shape[:2], dtype=np.uint8)
+        cv2.fillConvexPoly(page, corners, 255)
+        img[page > 0] = 122
+        img[:320][page[:320] > 0] = 160
+        detected = geometry.detect_quad(img)
+        assert detected.source == "auto"
+        assert polygon_iou(detected.points, corners) > 0.95
+
     def test_detects_straight_page(self, synthetic_page):
         img = paste_on_background(
             synthetic_page(600, 800),

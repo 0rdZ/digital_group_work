@@ -276,8 +276,14 @@ def detect_quad(
     best_score = -1.0
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 30, 90)
-    distance = cv2.distanceTransform(cv2.bitwise_not(edges), cv2.DIST_L2, 3)
     candidates = _edge_quads(edges, kernel)
+    # 纸面与桌面灰度相近时，用饱和度变化补齐灰度边缘的断点。
+    saturation = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)[:, :, 1]
+    color_edges = cv2.Canny(cv2.GaussianBlur(saturation, (3, 3), 0), 20, 60)
+    if np.any(color_edges):
+        combined_edges = cv2.bitwise_or(edges, color_edges)
+        candidates.extend(_edge_quads(combined_edges, kernel))
+    distance = cv2.distanceTransform(cv2.bitwise_not(edges), cv2.DIST_L2, 3)
     for mask in _paper_masks(small):
         candidates.extend(_contours_to_quads(mask, kernel))
 
