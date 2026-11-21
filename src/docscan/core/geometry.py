@@ -3,7 +3,8 @@
 算法链（检测在缩略图上做，变换在全分辨率上做）::
 
     缩略到 ≤800px → 多路纸面掩膜 → 先闭后开 → 外轮廓
-        → 凸包 + approxPolyDP 取四点 → 多候选打分 → 透视变换
+        → 凸包 + approxPolyDP 取四点；同时从闭合边缘提取候选
+    → 按形状及四边与图像边缘的贴合程度打分 → 透视变换
 
 设计要点：
 * 掩膜不用固定亮度阈值（暗光下会失效），改用 Otsu 全局自动阈值 + 低饱和高亮掩膜，
@@ -203,6 +204,33 @@ def _contours_to_quads(mask: np.ndarray, kernel: np.ndarray) -> list[np.ndarray]
     return quads
 
 
+def _edge_quads(edges: np.ndarray, kernel: np.ndarray) -> list[np.ndarray]:
+    """沿闭合边界找四角，保留被桌面、屏幕等外轮廓包围的纸页。"""
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if not _MIN_AREA_RATIO * edges.size <= area <= 0.985 * edges.size:
+            continue
+        hull = cv2.convexHull(contour)
+        polygon = cv2.approxPolyDP(hull, 0.02 * cv2.arcLength(hull, True), True)
+        if len(polygon) == 4:
+            candidates.append(polygon.reshape(4, 2))
+    return candidates
+
+
+def _edge_support(quad: np.ndarray, distance: np.ndarray, tolerance: float) -> float:
+    """统计每条候选边附近实际有图像边缘的比例，再对四边取平均。"""
+    fractions = np.linspace(0.05, 0.95, 64, dtype=np.float32)
+    ends = np.roll(quad, -1, axis=0)
+    samples = quad[:, None, :] + (ends - quad)[:, None, :] * fractions[None, :, None]
+    pixels = np.rint(samples).astype(int)
+    x, y = pixels[..., 0], pixels[..., 1]
+    h, w = distance.shape
+    return float(np.mean(distance[y.clip(0, h - 1), x.clip(0, w - 1)] <= tolerance))
+
+
 def detect_quad(
     img: Image,
     *,
@@ -246,15 +274,21 @@ def detect_quad(
 
     best_quad: np.ndarray | None = None
     best_score = -1.0
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 30, 90)
+    distance = cv2.distanceTransform(cv2.bitwise_not(edges), cv2.DIST_L2, 3)
+    candidates = _edge_quads(edges, kernel)
     for mask in _paper_masks(small):
-        for cand in _contours_to_quads(mask, kernel):
-            cand = order_points(cand)
-            score = score_quad(cand, img_area)
-            # 四点全部贴边 = 检测到的其实是整幅画面，多半没找到纸面，压低置信度
-            if _touches_border(cand, sw, sh):
-                score *= 0.75
-            if score > best_score:
-                best_score, best_quad = score, cand
+        candidates.extend(_contours_to_quads(mask, kernel))
+
+    for candidate in candidates:
+        cand = order_points(candidate)
+        support = _edge_support(cand, distance, k / 2)
+        score = score_quad(cand, img_area) * (0.6 + 0.4 * support)
+        if _touches_border(cand, sw, sh):
+            score *= 0.75
+        if score > best_score:
+            best_score, best_quad = score, cand
 
     if best_quad is None or best_score < min_confidence:
         return full_image_quad(img.shape, confidence=max(best_score, 0.0))

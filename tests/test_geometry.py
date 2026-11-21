@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 
+import cv2
 import numpy as np
 import pytest
 
@@ -37,6 +38,26 @@ class TestOrderPoints:
         pts = (rect @ rot.T) + 200
         got = geometry.order_points(pts[[2, 0, 3, 1]])
         np.testing.assert_allclose(got, pts, atol=1e-4)
+
+
+def test_edge_candidates_include_page_inside_another_outline():
+    edges = np.zeros((400, 500), dtype=np.uint8)
+    cv2.rectangle(edges, (5, 5), (490, 390), 255, 1)
+    cv2.rectangle(edges, (85, 50), (350, 340), 255, 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    page = np.float32([[85, 50], [350, 50], [350, 340], [85, 340]])
+    candidates = geometry._edge_quads(edges, kernel)
+    assert any(polygon_iou(geometry.order_points(q), page) > 0.98 for q in candidates)
+
+
+def test_edge_support_rewards_observed_page_sides():
+    # 已知的矩形纸边；平移 10 像素后，只有两条水平边仍能大部分重合。
+    edges = np.zeros((200, 200), dtype=np.uint8)
+    cv2.rectangle(edges, (40, 35), (150, 165), 255, 1)
+    distance = cv2.distanceTransform(cv2.bitwise_not(edges), cv2.DIST_L2, 3)
+    page = np.float32([[40, 35], [150, 35], [150, 165], [40, 165]])
+    assert geometry._edge_support(page, distance, 2) == 1
+    assert geometry._edge_support(page + [10, 0], distance, 2) < 0.55
 
 
 class TestDetectQuad:
