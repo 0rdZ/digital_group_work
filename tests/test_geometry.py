@@ -28,18 +28,15 @@ class TestOrderPoints:
         np.testing.assert_allclose(got[2], [300, 400])
         np.testing.assert_allclose(got[3], [10, 400])
 
-    def test_rotated_rect_keeps_cyclic_order(self):
-        """30° 旋转的矩形：排序结果仍为环序且起点是最上方的角。"""
-        theta = np.deg2rad(30)
+    @pytest.mark.parametrize("degrees", [-30, 30])
+    def test_rotated_rect_keeps_cyclic_order(self, degrees):
+        """正反倾斜时，打乱的纸张四角应恢复原来的左上起点和环序。"""
+        theta = np.deg2rad(degrees)
         rot = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
         rect = np.array([[0, 0], [400, 0], [400, 600], [0, 600]], dtype=np.float64) - 200
         pts = (rect @ rot.T) + 200
-        got = geometry.order_points(pts.astype(np.float32))
-        ys = got[:, 1]
-        assert ys[0] == ys.min()  # 起点是最高点
-        # 环序：相邻边交替横/竖
-        d = np.diff(np.vstack([got, got[:1]]), axis=0)
-        assert (np.linalg.norm(d, axis=1) > 100).all()
+        got = geometry.order_points(pts[[2, 0, 3, 1]])
+        np.testing.assert_allclose(got, pts, atol=1e-4)
 
 
 class TestDetectQuad:
