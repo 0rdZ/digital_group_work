@@ -119,3 +119,13 @@ def test_color_patch_keeps_chroma_and_paper_becomes_uniform():
 def test_full_color_page_without_paper_reference_is_preserved():
     img = np.full((80, 100, 3), (0.1, 0.4, 0.8), np.float32)
     np.testing.assert_array_equal(illumination.remove_shading(img), img)
+
+
+
+@pytest.mark.parametrize("sigmas,weights", [
+    ((), ()), ((2,), (0,)), ((2,), (-1,)), ((2,), (np.nan,)),
+    ((0,), (1,)), ((np.inf,), (1,)),
+])
+def test_retinex_rejects_invalid_scales_and_weights(sigmas, weights):
+    with pytest.raises(ValueError):
+        illumination.retinex(np.ones((16, 16), np.float32), sigmas=sigmas, weights=weights)

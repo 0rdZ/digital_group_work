@@ -132,6 +132,16 @@ def retinex(
     if len(weights) != len(sigmas):
         raise ValueError("sigmas 与 weights 长度不一致")
 
+    if not sigmas or not np.isfinite(sigmas).all() or np.any(np.asarray(sigmas) <= 0):
+        raise ValueError("sigmas 必须非空且全部为有限正数")
+    if (
+        not np.isfinite(weights).all()
+        or np.any(np.asarray(weights) < 0)
+        or not np.isfinite(sum(weights))
+        or sum(weights) <= 0
+    ):
+        raise ValueError("weights 必须为有限非负数且总和为有限正数")
+
     eps = 1.0 / 255.0
     log_i = np.log(arr + eps)
     acc = np.zeros_like(arr)
