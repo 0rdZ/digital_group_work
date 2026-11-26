@@ -153,3 +153,33 @@ def test_parameter_labels_have_separate_rows(root, theme):
             check(child)
 
     check(panel)
+
+
+
+def test_parameter_dropdown_stores_selected_value(root, theme):
+    from tkinter import ttk
+
+    from docscan.pipeline.stages import build_default_stages
+    from docscan.ui.widgets.stage_list import StageList
+
+    stages = build_default_stages()
+    stage = next(s for s in stages if s.name == "enhance")
+    panel = StageList(root, lambda *_: None, lambda *_: None, theme)
+    panel.rebuild(stages)
+    panel.select("enhance")
+
+    def find_box(widget):
+        for child in widget.winfo_children():
+            if isinstance(child, ttk.Combobox):
+                return child
+            found = find_box(child)
+            if found is not None:
+                return found
+        return None
+
+    box = find_box(panel)
+    assert box is not None
+    box.current(1)
+    box.event_generate("<<ComboboxSelected>>")
+    spec = next(s for s in stage.params_spec if s.key == "method")
+    assert stage.params["method"] == spec.choices[1][0]
