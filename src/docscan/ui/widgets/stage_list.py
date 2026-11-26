@@ -198,7 +198,8 @@ class StageList(ttk.Frame):
         box.set(spec.label_of(value))
 
         def on_pick(_e=None) -> None:
-            chosen = dict((label, value) for value, label in spec.choices).get(box.get(), spec.default)
+            values_by_label = {label: value for value, label in spec.choices}
+            chosen = values_by_label.get(box.get(), spec.default)
             stage.params[spec.key] = chosen
             if self._on_param_change:
                 self._on_param_change(stage.name, spec.key, chosen)
