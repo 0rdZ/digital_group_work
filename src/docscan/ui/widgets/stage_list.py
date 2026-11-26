@@ -133,12 +133,12 @@ class StageList(ttk.Frame):
 
         for r, spec in enumerate(stage.params_spec):
             ttk.Label(grid, text=spec.label, style="PanelDim.TLabel", anchor="w").grid(
-                row=r, column=0, sticky="w", pady=(2, 2), columnspan=2
+                row=2 * r, column=0, sticky="w", pady=(2, 2), columnspan=2
             )
             if isinstance(spec, NumParam):
-                self._build_num_control(grid, r, stage, spec)
+                self._build_num_control(grid, 2 * r + 1, stage, spec)
             elif isinstance(spec, EnumParam):
-                self._build_enum_control(grid, r, stage, spec)
+                self._build_enum_control(grid, 2 * r + 1, stage, spec)
 
     def _build_num_control(
         self, parent: ttk.Frame, row: int, stage: Stage, spec: NumParam
